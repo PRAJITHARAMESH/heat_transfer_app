@@ -1,3 +1,4 @@
+# FORCING A CLEAN BUILD TO INSTALL MISSING DEPENDENCIES 
 # app.py - Heat Transfer Analysis with clear inputs & styled UI
 import pandas as pd
 import numpy as np
@@ -224,7 +225,7 @@ if run and not issues:
     # The prediction now uses the live 'stemp' and 'atemp' values
     avg_t, max_t, ctr_t = nearest_row_predict(tc, bs, stemp, atemp)
     eff = efficiency(max_t, avg_t, atemp)
-    cool = coolant_suggestion(avg_t)
+    cool = coolant_suggestion(avg_temp)
     mat = material_suggestion(tc)
 
     st.write("")
