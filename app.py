@@ -4,11 +4,19 @@ import numpy as np
 import streamlit as st
 from pathlib import Path
 import plotly.graph_objects as go
+import requests 
+from streamlit_autorefresh import st_autorefresh 
 
 # ---------- Page Setup ----------
 st.set_page_config(page_title="Heat Transfer Analysis", layout="wide")
 
-# ---------- CSS ----------
+# --- ADDED AUTO-REFRESH COMPONENT ---
+# Forces the entire script to rerun every 20,000 milliseconds (20 seconds) 
+# to fetch new data from ThingSpeak.
+st_autorefresh(interval=20000, key="data_refresh_timer")
+# ------------------------------------
+
+# ---------- CSS (No Change) ----------
 st.markdown("""
 <style>
 .main { padding: 0rem 2rem; }
@@ -37,11 +45,11 @@ footer:after { content:'Developed by Praji'; visibility: visible; display:block;
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- Load Data ----------
+# ---------- Load Data (No Change) ----------
 DATA_PATH = Path(__file__).parent / "heat_transfer_dataset.csv"
 df = pd.read_csv(DATA_PATH)
 
-# ---------- Limits ----------
+# ---------- Limits (CLEANED) ----------
 LIMITS = {
     "ThermalCond": (50, 500),
     "BlockSize": (5, 50),
@@ -49,7 +57,46 @@ LIMITS = {
     "AmbientTemp": (0, 50),
 }
 
-# ---------- Functions ----------
+# ---------------------------------------------------
+# !!! FINAL CONFIGURATION (Channel ID Integrated) !!!
+# ---------------------------------------------------
+THINGSPEAK_CHANNEL_ID = "3111348" 
+THINGSPEAK_READ_API_KEY = "8XPUACRYN84UOGJ9" 
+# ---------------------------------------------------
+
+# ---------- NEW Function to Fetch BOTH Live Data Points ----------
+def fetch_live_data():
+    """Fetches the latest entry for ALL fields (Field 1: Ambient, Field 2: Source)."""
+    # Use the /feeds/last.json URL to get all fields at once
+    url = (
+        f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds/last.json?"
+        f"api_key={THINGSPEAK_READ_API_KEY}"
+    )
+    
+    try:
+        response = requests.get(url, timeout=8)
+        response.raise_for_status() # Raise exception for bad status codes
+        data = response.json()
+        
+        # Check if the required fields exist and are not None
+        t_ambient = data.get('field1') # Field 1 from ESP32 code is Ambient Temp
+        t_source = data.get('field2')  # Field 2 from ESP32 code is Source Temp
+
+        if t_ambient and t_source:
+            # Return both values as floats
+            return float(t_ambient), float(t_source)
+        else:
+            st.warning("ThingSpeak Warning: Live data not available for Ambient (Field 1) and Source (Field 2). Using default sliders.")
+            return None, None
+            
+    except requests.exceptions.RequestException as e:
+        st.error(f"ThingSpeak API Error: Could not fetch live data. Check keys/Channel ID/internet. Error: {e}")
+        return None, None
+    except Exception as e:
+        st.error(f"Data Processing Error: {e}")
+        return None, None
+
+
 def check_limits(vals: dict):
     issues = []
     for k,(lo,hi) in LIMITS.items():
@@ -81,11 +128,11 @@ def nearest_row_predict(tc, bs, stemp, atemp):
     row = df.loc[d2.idxmin()]
     return float(row["AvgTemp"]), float(row["MaxTemp"]), float(row["CenterTemp"])
 
-# ---------- Header ----------
+# ---------- Header (No Change) ----------
 st.markdown("<h1 style='text-align:center;'>🔥 Heat Transfer Analysis</h1>", unsafe_allow_html=True)
 st.caption("Enter inputs clearly with units. Predicts Avg/Max/Center Temperatures, Efficiency, Coolant & Material suggestions.")
 
-# ---------- Sidebar Inputs ----------
+# ---------- Sidebar Inputs (Modified for IOT) ----------
 st.sidebar.title("Inputs")
 
 st.sidebar.subheader("Material & Geometry")
@@ -105,23 +152,54 @@ st.sidebar.markdown(f"<span class='input-badge'>Current: {bs} mm</span>", unsafe
 
 st.sidebar.write("---")
 st.sidebar.subheader("Temperatures")
-stemp = st.sidebar.slider(
-    "Source Temperature (°C)", LIMITS["SourceTemp"][0], LIMITS["SourceTemp"][1], 60,
-    help="Heat source temperature"
-)
-st.sidebar.markdown(f"<span class='input-badge'>Current: {stemp} °C</span>", unsafe_allow_html=True)
 
-atemp = st.sidebar.slider(
-    "Ambient Temperature (°C)", LIMITS["AmbientTemp"][0], LIMITS["AmbientTemp"][1], 25,
-    help="Surrounding air temperature"
-)
-st.sidebar.markdown(f"<span class='input-badge'>Current: {atemp} °C</span>", unsafe_allow_html=True)
+# --- 1. Fetch Live Data Once ---
+live_ambient, live_source = fetch_live_data()
+
+
+# --- 2. Ambient Temperature (T_cold) Input ---
+atemp_min, atemp_max = LIMITS["AmbientTemp"]
+
+if live_ambient is not None:
+    st.sidebar.markdown("**Ambient Temp (°C) - 📡 Field 1 (Live)**", unsafe_allow_html=True)
+    st.sidebar.metric(label="Live Ambient Temp", value=f"{live_ambient:.2f} °C")
+    # Cap the live value to stay within the model's limits
+    atemp = max(atemp_min, min(atemp_max, live_ambient))
+    st.sidebar.caption("Value automatically used for calculation.")
+else:
+    # Fallback slider
+    default_atemp = 25
+    atemp = st.sidebar.slider(
+        "Ambient Temperature (°C)", atemp_min, atemp_max, default_atemp, step=0.1, key='ambient_slider'
+    )
+    st.sidebar.markdown(f"<span class='input-badge'>Current: {atemp} °C (Manual)</span>", unsafe_allow_html=True)
+
+
+st.sidebar.write("---")
+
+# --- 3. Source Temperature (T_hot) Input ---
+stemp_min, stemp_max = LIMITS["SourceTemp"]
+
+if live_source is not None:
+    st.sidebar.markdown("**Source Temp (°C) - 📡 Field 2 (Live)**", unsafe_allow_html=True)
+    st.sidebar.metric(label="Live Source Temp", value=f"{live_source:.2f} °C")
+    # Cap the live value to stay within the model's limits
+    stemp = max(stemp_min, min(stemp_max, live_source))
+    st.sidebar.caption("Value automatically used for calculation.")
+else:
+    # Fallback slider
+    default_stemp = 60
+    stemp = st.sidebar.slider(
+        "Source Temperature (°C)", stemp_min, stemp_max, default_stemp, step=1, key='source_slider'
+    )
+    st.sidebar.markdown(f"<span class='input-badge'>Current: {stemp} °C (Manual)</span>", unsafe_allow_html=True)
+
 
 with st.sidebar:
     st.write("---")
     run = st.button("Calculate")
 
-# ---------- Validation ----------
+# ---------- Validation (No Change) ----------
 values = {"ThermalCond": tc, "BlockSize": bs, "SourceTemp": stemp, "AmbientTemp": atemp}
 issues = check_limits(values)
 
@@ -130,7 +208,7 @@ if issues:
     for msg in issues:
         st.error(msg)
 
-# ---------- Show current inputs ----------
+# ---------- Show current inputs (No Change) ----------
 box1, box2, box3, box4 = st.columns(4)
 with box1:
     st.markdown(f"<div class='metric-card'><h2>Thermal Cond. (W/m·K)</h2><p>{tc}</p></div>", unsafe_allow_html=True)
@@ -141,8 +219,9 @@ with box3:
 with box4:
     st.markdown(f"<div class='metric-card'><h2>Ambient Temp (°C)</h2><p>{atemp}</p></div>", unsafe_allow_html=True)
 
-# ---------- Results ----------
+# ---------- Results (No Change) ----------
 if run and not issues:
+    # The prediction now uses the live 'stemp' and 'atemp' values
     avg_t, max_t, ctr_t = nearest_row_predict(tc, bs, stemp, atemp)
     eff = efficiency(max_t, avg_t, atemp)
     cool = coolant_suggestion(avg_t)
